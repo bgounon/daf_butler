@@ -31,6 +31,7 @@ from typing import (
     Optional,
     Tuple,
     TYPE_CHECKING,
+    TypeVar,
     Union,
 )
 
@@ -44,6 +45,9 @@ if TYPE_CHECKING:  # Imports needed only for type annotations; may be circular.
     from .elements import DimensionElement
     from .universe import DimensionUniverse
     from .records import DimensionRecord
+
+
+S = TypeVar("S", bound="DataCoordinate")
 
 
 class DataCoordinate(IndexedTupleDict[Dimension, Any]):
@@ -215,7 +219,7 @@ class DataCoordinate(IndexedTupleDict[Dimension, Any]):
             else:
                 raise TypeError(f"Only `int` and `str` are allowed as dimension keys, not {v} ({type(v)}).")
 
-    def subset(self, graph: DimensionGraph) -> DataCoordinate:
+    def subset(self: S, graph: DimensionGraph) -> S:
         """Return a new `DataCoordinate` whose graph is a subset of
         ``self.graph``.
 
@@ -238,7 +242,9 @@ class DataCoordinate(IndexedTupleDict[Dimension, Any]):
             Raised if ``graph`` is not a subset of ``self.graph``, and hence
             one or more dimensions has no associated primary key value.
         """
-        return DataCoordinate(graph, tuple(self[dimension] for dimension in graph.required))
+        # MyPy warns that this doesn't match the declared return type, because
+        # it wouldn't _if_ there was a subclass that didn't reimplement it.
+        return DataCoordinate(graph, tuple(self[dimension] for dimension in graph.required))  # type: ignore
 
     @property
     def universe(self) -> DimensionUniverse:
