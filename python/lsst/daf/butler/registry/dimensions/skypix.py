@@ -22,18 +22,18 @@ from __future__ import annotations
 
 __all__ = ["SkyPixDimensionRecordStorage"]
 
-from typing import Optional
+from typing import Iterable, Optional
 
 import sqlalchemy
 
 from ...core import (
-    DataId,
     DimensionElement,
     DimensionRecord,
     NamedKeyDict,
     SkyPixDimension,
     Timespan,
 )
+from .._dataCoordinateIterable import DataCoordinateIterable
 from ..queries import QueryBuilder
 from ..interfaces import Database, DimensionRecordStorage, StaticTablesContext
 
@@ -96,7 +96,9 @@ class SkyPixDimensionRecordStorage(DimensionRecordStorage):
         # Docstring inherited from DimensionRecordStorage.sync.
         raise TypeError(f"Cannot sync SkyPixdimension {self._dimension.name}.")
 
-    def fetch(self, dataId: DataId) -> Optional[DimensionRecord]:
+    def fetch(self, dataIds: DataCoordinateIterable) -> Iterable[DimensionRecord]:
         # Docstring inherited from DimensionRecordStorage.fetch.
-        return self._dimension.RecordClass(dataId[self._dimension.name],
-                                           self._dimension.pixelization.pixel(dataId[self._dimension.name]))
+        RecordClass = self._dimension.RecordClass
+        for dataId in dataIds:
+            index = dataId[self._dimension.name]
+            yield RecordClass(index, self._dimension.pixelization.pixel(index))
