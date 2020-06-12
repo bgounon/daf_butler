@@ -21,73 +21,55 @@
 
 from __future__ import annotations
 
-__all__ = ("DataCoordinate", "ExpandedDataCoordinate", "DataId")
+__all__ = (
+    "DataCoordinate",
+    "CompleteDataCoordinate",
+    "EmptyDataCoordinate",
+    "ExpandedDataCoordinate",
+    "MinimalDataCoordinate",
+    "DataId",
+    "DataIdKey",
+    "DataIdValue",
+)
 
+from abc import ABC, abstractmethod
 import numbers
 from typing import (
+    AbstractSet,
     Any,
+    Callable,
+    Dict,
+    Iterator,
     Mapping,
     Optional,
     Tuple,
     TYPE_CHECKING,
-    TypeVar,
     Union,
 )
 
+import astropy.time
+
 from lsst.sphgeom import Region
-from ..named import IndexedTupleDict, NamedKeyMapping
+from ..named import NamedKeyMapping, NamedValueSet
 from ..timespan import Timespan
-from .elements import Dimension
+from .elements import Dimension, DimensionElement
 from .graph import DimensionGraph
 
 if TYPE_CHECKING:  # Imports needed only for type annotations; may be circular.
-    from .elements import DimensionElement
     from .universe import DimensionUniverse
     from .records import DimensionRecord
 
 
-S = TypeVar("S", bound="DataCoordinate")
+DataIdKey = Union[str, Dimension]
+DataIdValue = Union[str, int, None]
 
 
-class DataCoordinate(IndexedTupleDict[Dimension, Any]):
-    """An immutable data ID dictionary that guarantees that its key-value pairs
-    identify all required dimensions in a `DimensionGraph`.
+class DataCoordinate(ABC):
 
-    `DataCoordinate` instances should usually be constructed via the
-    `standardize` class method; the constructor is reserved for callers that
-    can guarantee that the ``values`` tuple has exactly the right elements.
-
-    Parameters
-    ----------
-    graph : `DimensionGraph`
-        The dimensions identified by this instance.
-    values : `tuple`
-        Tuple of primary key values for the given dimensions.
-
-    Notes
-    -----
-    Like any data ID class, `DataCoordinate` behaves like a dictionary,
-    mostly via methods inherited from `IndexedTupleDict`.  Like `NamedKeyDict`,
-    both `Dimension` instances and `str` names thereof may be used as keys in
-    lookup operations.
-
-    Subclasses are permitted to support lookup for any dimension in
-    ``self.graph.dimensions``, but the base class only supports lookup for
-    those in ``self.graph.required``, which is the minimal set needed to
-    identify all others in a `Registry`.  Both the base class and subclasses
-    define comparisons, iterators, and the `keys`, `values`, and `items` views
-    to just the ``self.graph.required`` subset in order to guarantee true
-    (i.e. Liskov) substitutability.
-    """
-
-    __slots__ = ("_graph",)
-
-    def __init__(self, graph: DimensionGraph, values: Tuple[Any, ...]):
-        super().__init__(graph._requiredIndices, values)
-        self._graph = graph
+    __slots__ = ()
 
     @staticmethod
-    def standardize(mapping: Optional[Union[Mapping[str, Any], NamedKeyMapping[Dimension, Any]]] = None, *,
+    def standardize(mapping: Optional[Union[Mapping[str, DataIdValue], DataCoordinate]] = None, *,
                     graph: Optional[DimensionGraph] = None,
                     universe: Optional[DimensionUniverse] = None,
                     **kwargs: Any) -> DataCoordinate:
@@ -114,9 +96,11 @@ class DataCoordinate(IndexedTupleDict[Dimension, Any]):
         Returns
         -------
         coordinate : `DataCoordinate`
-            A validated `DataCoordinate` instance.  May be a subclass instance
-            if and only if ``mapping`` is a subclass instance and ``graph``
-            is a subset of ``mapping.graph``.
+            A validated `DataCoordinate` instance.  Will be a
+            `CompleteDataCoordinate` if all implied dimensions are identified,
+            an `ExpandedDataCoordinate` if ``mapping`` is already an
+            `ExpandedDataCoordinate` and ``kwargs`` is empty, and a
+            `MinimalDataCoordinate` otherwise.
 
         Raises
         ------
@@ -127,83 +111,93 @@ class DataCoordinate(IndexedTupleDict[Dimension, Any]):
 
         Notes
         -----
-        Because `DataCoordinate` stores only values for required dimensions,
-        key-value pairs for other related dimensions will be ignored and
-        excluded from the result.  This means that a `DataCoordinate` may
-        contain *fewer* key-value pairs than the informal data ID dictionary
-        it was constructed from.
+        Because `MinimalDataCoordinate` stores only values for required
+        dimensions, key-value pairs for other implied dimensions will be
+        ignored and excluded from the result unless _all_ implied dimensions
+        are identified (and hence a `CompleteDataCoordinate` can be returned).
+        This means that a `DataCoordinate` may contain *fewer* key-value pairs
+        than the informal data ID dictionary it was constructed from.
         """
+        d: Dict[str, DataIdValue] = {}
         if isinstance(mapping, DataCoordinate):
             if graph is None:
                 if not kwargs:
                     # Already standardized to exactly what we want.
                     return mapping
-            elif mapping.graph.issuperset(graph) and kwargs.keys().isdisjoint(graph.names):
-                # Already standardized; just return the relevant subset.
+            elif (isinstance(mapping, CompleteDataCoordinate)
+                    and kwargs.keys().isdisjoint(graph.dimensions.names)):
+                # User provided kwargs, but told us not to use them by
+                # passing in a disjoint graph.
                 return mapping.subset(graph)
             assert universe is None or universe == mapping.universe
             universe = mapping.universe
-        d: Mapping[str, Any]
-        if kwargs:
-            if mapping:
-                if isinstance(mapping, NamedKeyMapping):
-                    d = dict(mapping.byName(), **kwargs)
-                else:
-                    d = dict(mapping, **kwargs)
-            else:
-                d = kwargs
-        elif mapping:
-            if isinstance(mapping, NamedKeyMapping):
-                d = mapping.byName()
-            else:
-                d = mapping
-        else:
-            d = {}
+            d.update((name, mapping[name]) for name in mapping.graph.required.names)
+            if isinstance(mapping, CompleteDataCoordinate):
+                d.update((name, mapping[name]) for name in mapping.graph.implied.names)
+        elif mapping is not None:
+            d.update(mapping)
+        d.update(kwargs)
         if graph is None:
             if universe is None:
                 raise TypeError("universe must be provided if graph is not.")
             graph = DimensionGraph(universe, names=d.keys())
+        if not graph.dimensions:
+            return DataCoordinate.makeEmpty(graph.universe)
+        cls: Callable[[DimensionGraph, Tuple[DataIdValue, ...]], DataCoordinate]
+        if d.keys() >= graph.dimensions.names:
+            cls = CompleteDataCoordinate.fromValues
+            values = tuple(d[name] for name in graph.dimensions.names)
+        else:
+            cls = MinimalDataCoordinate.fromValues
+            try:
+                values = tuple(d[name] for name in graph.required.names)
+            except KeyError as err:
+                raise KeyError(f"No value in data ID ({mapping}) for required dimension {err}.") from err
+        # Some backends cannot handle numpy.int64 type which is a subclass of
+        # numbers.Integral; convert that to int.
+        values = tuple(int(val) if isinstance(val, numbers.Integral)  # type: ignore
+                       else val for val in values)
+        return cls(graph, values)
+
+    @staticmethod
+    def makeEmpty(universe: DimensionUniverse) -> EmptyDataCoordinate:
+        return EmptyDataCoordinate(universe)
+
+    @abstractmethod
+    def __getitem__(self, key: DataIdKey) -> DataIdValue:
+        raise NotImplementedError()
+
+    def get(self, key: DataIdKey, default: Any = None) -> Any:
         try:
-            values = tuple(d[name] for name in graph.required.names)
-            # some backends cannot handle numpy.int64 type which is
-            # a subclass of numbers.Integral, convert that to int.
-            values = tuple(int(val) if isinstance(val, numbers.Integral) else val for val in values)
-        except KeyError as err:
-            raise KeyError(f"No value in data ID ({mapping}) for required dimension {err}.") from err
-        return DataCoordinate(graph, values)
+            return self[key]
+        except KeyError:
+            return default
 
-    def __hash__(self) -> int:
-        return hash((self.graph, self.values()))
+    @property
+    @abstractmethod
+    def graph(self) -> DimensionGraph:
+        """The dimensions identified by this data ID (`DimensionGraph`).
 
-    def __eq__(self, other: Any) -> bool:
-        try:
-            # Optimized code path for DataCoordinate comparisons.
-            return self.graph == other.graph and self.values() == other.values()
-        except AttributeError:
-            # We can't reliably compare to informal data ID dictionaries
-            # we don't know if any extra keys they might have are consistent
-            # with an `ExpandedDataCoordinate` version of ``self`` (which
-            # should compare as equal) or something else (which should
-            # compare as not equal).
-            # We don't even want to return `NotImplemented` and tell Python
-            # to delegate to ``other.__eq__``, because that could also be
-            # misleading.  We raise TypeError instead.
-            raise TypeError("Cannot compare DataCoordinate instances to other objects without potentially "
-                            "misleading results.") from None
+        Note that values are only required to be present for dimensions in
+        ``self.graph.required``; all others may be retrieved (from a
+        `Registry`) given these.
+        """
+        raise NotImplementedError()
 
-    def __repr__(self) -> str:
-        # We can't make repr yield something that could be exec'd here without
-        # printing out the whole DimensionUniverse the graph is derived from.
-        # So we print something that mostly looks like a dict, but doesn't
-        # quote it's keys: that's both more compact and something that can't
-        # be mistaken for an actual dict or something that could be exec'd.
-        return "{{{}}}".format(', '.join(f"{k.name}: {v!r}" for k, v in self.items()))
+    def minimal(self) -> MinimalDataCoordinate:
+        # TODO: docs
+        return MinimalDataCoordinate.fromValues(
+            self.graph,
+            tuple(self[name] for name in self.graph.required.names)
+        )
 
-    def subset(self: S, graph: DimensionGraph) -> S:
+    @abstractmethod
+    def subset(self, graph: DimensionGraph) -> DataCoordinate:
         """Return a new `DataCoordinate` whose graph is a subset of
         ``self.graph``.
 
-        Subclasses may override this method to return a subclass instance.
+        Subclasses may override this method to return a subclass instance or
+        operate more efficiently.
 
         Parameters
         ----------
@@ -221,10 +215,31 @@ class DataCoordinate(IndexedTupleDict[Dimension, Any]):
         KeyError
             Raised if ``graph`` is not a subset of ``self.graph``, and hence
             one or more dimensions has no associated primary key value.
+        NotImplementedError
+            Raised if ``graph`` is a subset of ``self.graph``, but its
+            required dimensions are only implied dimensions in ``self.graph``,
+            and ``self`` is a `MinimalDataCoordinate` (and hence those
+            dimension values are unknown).
         """
-        # MyPy warns that this doesn't match the declared return type, because
-        # it wouldn't _if_ there was a subclass that didn't reimplement it.
-        return DataCoordinate(graph, tuple(self[dimension] for dimension in graph.required))  # type: ignore
+        raise NotImplementedError()
+
+    def __repr__(self) -> str:
+        # We can't make repr yield something that could be exec'd here without
+        # printing out the whole DimensionUniverse the graph is derived from.
+        # So we print something that mostly looks like a dict, but doesn't
+        # quote its keys: that's both more compact and something that can't
+        # be mistaken for an actual dict or something that could be exec'd.
+        return "{{{}}}".format(
+            ', '.join(f"{d}: {self.get(d, '?')!r}" for d in self.graph.dimensions.names)
+        )
+
+    def __hash__(self) -> int:
+        return hash((self.graph,) + tuple(self[d.name] for d in self.graph.required))
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, DataCoordinate):
+            other = DataCoordinate.standardize(other)
+        return self.graph == other.graph and all(self[d.name] == other[d.name] for d in self.graph.required)
 
     @property
     def universe(self) -> DimensionUniverse:
@@ -233,21 +248,73 @@ class DataCoordinate(IndexedTupleDict[Dimension, Any]):
         """
         return self.graph.universe
 
-    @property
-    def graph(self) -> DimensionGraph:
-        """The dimensions identified by this data ID (`DimensionGraph`).
 
-        Note that values are only required to be present for dimensions in
-        ``self.graph.required``; all others may be retrieved (from a
-        `Registry`) given these.
-        """
-        return self._graph
+class MinimalDataCoordinate(DataCoordinate, NamedKeyMapping[Dimension, DataIdValue]):
+    __slots__ = ()
+
+    @staticmethod
+    def fromValues(graph: DimensionGraph, values: Tuple[DataIdValue, ...]) -> MinimalDataCoordinate:
+        return _MinimalTupleDataCoordinate(graph, values)
+
+    @staticmethod
+    def fromMapping(graph: DimensionGraph, mapping: Mapping[str, DataIdValue]) -> MinimalDataCoordinate:
+        return MinimalDataCoordinate.fromValues(
+            graph,
+            tuple(mapping[name] for name in graph.required.names)
+        )
+
+    @abstractmethod
+    def keys(self) -> NamedValueSet[Dimension]:
+        raise NotImplementedError()
+
+    def minimal(self) -> MinimalDataCoordinate:
+        # Docstring inherited from DataCoordinate.
+        return self
+
+    def subset(self, graph: DimensionGraph) -> MinimalDataCoordinate:
+        if graph == self.graph:
+            return self
+        if not (graph <= self.graph):
+            raise KeyError(f"{graph} is not a subset of {self.graph}.")
+        if not (graph.required <= self.graph.required):
+            raise NotImplementedError(
+                f"No value for implied dimension(s) {graph.required - self.graph.required} in "
+                f"MinimalDataCoordinate {self}."
+            )
+        return _MinimalTupleDataCoordinate(
+            graph,
+            tuple(self[name] for name in graph.dimensions.names)
+        )
 
 
-DataId = Union[DataCoordinate, Mapping[str, Any]]
-"""A type-annotation alias for signatures that accept both informal data ID
-dictionaries and validated `DataCoordinate` instances.
-"""
+class CompleteDataCoordinate(DataCoordinate, NamedKeyMapping[Dimension, DataIdValue]):
+    __slots__ = ()
+
+    @staticmethod
+    def fromValues(graph: DimensionGraph, values: Tuple[DataIdValue, ...]) -> CompleteDataCoordinate:
+        return _CompleteTupleDataCoordinate(graph, values)
+
+    @staticmethod
+    def fromMapping(graph: DimensionGraph, mapping: Mapping[str, DataIdValue]) -> CompleteDataCoordinate:
+        return CompleteDataCoordinate.fromValues(
+            graph,
+            tuple(mapping[name] for name in graph.dimensions.names)
+        )
+
+    def expanded(self, records: Dict[str, Optional[DimensionRecord]]) -> ExpandedDataCoordinate:
+        return _ExpandedTupleDataCoordinate(self.graph, tuple(self.values()), records=records)
+
+    @abstractmethod
+    def keys(self) -> NamedValueSet[Dimension]:
+        raise NotImplementedError()
+
+    def subset(self, graph: DimensionGraph) -> CompleteDataCoordinate:
+        if graph == self.graph:
+            return self
+        return _CompleteTupleDataCoordinate(
+            graph,
+            tuple(self[name] for name in graph.dimensions.names)
+        )
 
 
 def _intersectRegions(*args: Region) -> Optional[Region]:
@@ -272,110 +339,40 @@ def _intersectRegions(*args: Region) -> Optional[Region]:
         return NotImplemented
 
 
-class ExpandedDataCoordinate(DataCoordinate):
-    """A data ID that has been expanded to include all relevant metadata.
+class ExpandedDataCoordinate(CompleteDataCoordinate):
+    __slots__ = ()
 
-    Instances should usually be obtained by calling `Registry.expandDataId`.
+    @abstractmethod
+    def record(self, key: Union[DimensionElement, str]) -> Optional[DimensionRecord]:
+        raise NotImplementedError()
 
-    Parameters
-    ----------
-    graph : `DimensionGraph`
-        The dimensions identified by this instance.
-    values : `tuple`
-        Tuple of primary key values for the given dimensions.
-    records : `~collections.abc.Mapping`
-        Dictionary mapping `DimensionElement` to `DimensionRecord`.
-    full : `~collections.abc.Mapping`
-        Dictionary mapping dimensions to their primary key values for all
-        dimensions in the graph, not just required ones.  Ignored unless
-        ``conform`` is `False.`
-    region : `sphgeom.Region`, optional
-        Region on the sky associated with this data ID, or `None` if there
-        are no spatial dimensions.  At present, this may be the special value
-        `NotImplemented` if there multiple spatial dimensions identified; in
-        the future this will be replaced with the intersection.  Ignored unless
-        ``conform`` is `False`.Timespan
-    timespan : `Timespan`, optionalTimespan
-        Timespan associated with this data ID, or `None` if there are no
-        temporal dimensions.
-        Ignored unless ``conform`` is `False`.
-    conform : `bool`, optional
-        If `True` (default), adapt arguments from arbitrary mappings to the
-        custom dictionary types and check that all expected key-value pairs are
-        present.  `False` is only for internal use.
-
-    Notes
-    -----
-    To maintain Liskov substitutability with `DataCoordinate`,
-    `ExpandedDataCoordinate` mostly acts like a mapping that contains only
-    values for its graph's required dimensions, even though it also contains
-    values for all implied dimensions - its length, iteration, and
-    keys/values/items views reflect only required dimensions.  Values for
-    the primary keys of implied dimensions can be obtained from the `full`
-    attribute, and are also accessible in dict lookups and the ``in`` operator.
-    """
-
-    __slots__ = ("_records", "_full", "_region", "_timespan")
-
-    def __init__(self, graph: DimensionGraph, values: Tuple[Any, ...], *,
-                 records: NamedKeyMapping[DimensionElement, Optional[DimensionRecord]],
-                 full: Optional[NamedKeyMapping[Dimension, Any]] = None,
-                 region: Optional[Region] = None,
-                 timespan: Optional[Timespan] = None,
-                 conform: bool = True):
-        super().__init__(graph, values)
-        if conform:
-            self._records = IndexedTupleDict(
-                indices=graph._elementIndices,
-                values=tuple(records[element.name] for element in graph.elements)
-            )
-            self._full = IndexedTupleDict(
-                indices=graph._dimensionIndices,
-                values=tuple(getattr(self.records[dimension], dimension.primaryKey.name, None)
-                             for dimension in graph.dimensions)
-            )
-            regions = []
-            for element in self.graph.spatial:
-                record = self.records[element.name]
-                # DimensionRecord subclasses for spatial elements always have a
-                # .region, but they're dynamic so this can't be type-checked.
-                if record is None or record.region is None:  # type: ignore
-                    self._region = None
-                    break
-                else:
-                    regions.append(record.region)  # type:ignore
+    @property
+    def region(self) -> Optional[Region]:
+        # TODO: docs
+        regions = []
+        for element in self.graph.spatial:
+            record = self.record(element.name)
+            # DimensionRecord subclasses for spatial elements always have a
+            # .region, but they're dynamic so this can't be type-checked.
+            if record is None or record.region is None:  # type: ignore
+                return None
             else:
-                self._region = _intersectRegions(*regions)
-            timespans = []
-            for element in self.graph.temporal:
-                record = self.records[element.name]
-                # DimensionRecord subclasses for temporal elements always have
-                # .timespan, but they're dynamic so this can't be type-checked.
-                if record is None or record.timespan is None:  # type:ignore
-                    self._timespan = None
-                    break
-                else:
-                    timespans.append(record.timespan)  # type:ignore
+                regions.append(record.region)  # type:ignore
+        return _intersectRegions(*regions)
+
+    @property
+    def timespan(self) -> Optional[Timespan[astropy.time.Time]]:
+        # TODO: docs
+        timespans = []
+        for element in self.graph.temporal:
+            record = self.record(element.name)
+            # DimensionRecord subclasses for temporal elements always have
+            # .timespan, but they're dynamic so this can't be type-checked.
+            if record is None or record.timespan is None:  # type:ignore
+                return None
             else:
-                self._timespan = Timespan.intersection(*timespans)
-        else:
-            # User has declared that the types are correct; ignore them.
-            self._records = records  # type: ignore
-            self._full = full  # type: ignore
-            self._region = region
-            self._timespan = timespan
-
-    def __contains__(self, key: Any) -> bool:
-        return key in self.full
-
-    def __getitem__(self, key: Union[Dimension, str]) -> Any:
-        return self.full[key]
-
-    def __repr__(self) -> str:
-        # See DataCoordinate.__repr__ comment for reasoning behind this form.
-        # The expanded version just includes key-value pairs for implied
-        # dimensions.
-        return "{{{}}}".format(', '.join(f"{k.name}: {v!r}" for k, v in self.full.items()))
+                timespans.append(record.timespan)  # type:ignore
+        return Timespan.intersection(*timespans)
 
     def pack(self, name: str, *, returnMaxBits: bool = False) -> Union[Tuple[int, int], int]:
         """Pack this data ID into an integer.
@@ -401,48 +398,144 @@ class ExpandedDataCoordinate(DataCoordinate):
         return self.universe.makePacker(name, self).pack(self, returnMaxBits=returnMaxBits)
 
     def subset(self, graph: DimensionGraph) -> ExpandedDataCoordinate:
-        # Docstring inherited from DataCoordinate.subset.
-        return ExpandedDataCoordinate(
+        if graph == self.graph:
+            return self
+        return _ExpandedTupleDataCoordinate(
             graph,
-            tuple(self[dimension] for dimension in graph.required),
-            records=self.records,
-            conform=True
+            tuple(self[d] for d in graph.dimensions),
+            records={e.name: self.record(e.name) for e in graph.elements},
         )
 
-    @property
-    def full(self) -> NamedKeyMapping[Dimension, Any]:
-        """Dictionary mapping dimensions to their primary key values for all
-        dimensions in the graph, not just required ones (`NamedKeyMapping`).
 
-        Like `DataCoordinate` itself, this dictionary can be indexed by `str`
-        name as well as `Dimension` instance.
-        """
-        return self._full
+DataId = Union[DataCoordinate, Mapping[str, DataIdValue]]
+"""A type-annotation alias for signatures that accept both informal data ID
+dictionaries and validated `DataCoordinate` instances.
+"""
 
-    @property
-    def records(self) -> NamedKeyMapping[DimensionElement, Optional[DimensionRecord]]:
-        """Dictionary mapping `DimensionElement` to the associated
-        `DimensionRecord` (`NamedKeyMapping`).
 
-        Like `DataCoordinate` itself, this dictionary can be indexed by `str`
-        name as well as `DimensionElement` instance.
-        """
-        return self._records
+class _DataCoordinateTupleMixin(NamedKeyMapping[Dimension, DataIdValue]):
 
-    @property
-    def region(self) -> Optional[Region]:
-        """Region on the sky associated with this data ID, or `None` if there
-        are no spatial dimensions (`sphgeom.Region`).
+    __slots__ = ("_graph", "_indices", "_values")
 
-        At present, this may be the special value `NotImplemented` if there
-        multiple spatial dimensions identified; in the future this will be
-        replaced with the intersection.
-        """
-        return self._region
+    def __init__(self, graph: DimensionGraph,
+                 indices: Dict[str, int],
+                 values: Tuple[DataIdValue, ...]):
+        assert len(indices) == len(values)
+        self._graph = graph
+        self._indices = indices
+        self._values = values
+
+    @abstractmethod
+    def keys(self) -> NamedValueSet[Dimension]:
+        raise NotImplementedError()
+
+    def values(self) -> Tuple[DataIdValue, ...]:  # type: ignore
+        return self._values
 
     @property
-    def timespan(self) -> Optional[Timespan]:
-        """Timespan associated with this data ID, or `None` if there are no
-        temporal dimensions (`TimeSpan`).
-        """
-        return self._timespan
+    def names(self) -> AbstractSet[str]:
+        return self.keys().names
+
+    @property
+    def graph(self) -> DimensionGraph:
+        return self._graph
+
+    def __getitem__(self, key: DataIdKey) -> DataIdValue:
+        if isinstance(key, Dimension):
+            key = key.name
+        return self._values[self._indices[key]]
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+    def __iter__(self) -> Iterator[Dimension]:
+        return iter(self.keys())
+
+
+class _MinimalTupleDataCoordinate(_DataCoordinateTupleMixin, MinimalDataCoordinate):
+
+    __slots__ = ()
+
+    def __init__(self, graph: DimensionGraph, values: Tuple[DataIdValue, ...]):
+        super().__init__(graph, graph._requiredIndices, values)
+
+    def keys(self) -> NamedValueSet[Dimension]:
+        return self.graph.required
+
+
+class _CompleteTupleDataCoordinate(_DataCoordinateTupleMixin, CompleteDataCoordinate):
+
+    __slots__ = ()
+
+    def __init__(self, graph: DimensionGraph, values: Tuple[DataIdValue, ...]):
+        super().__init__(graph, graph._dimensionIndices, values)
+
+    def keys(self) -> NamedValueSet[Dimension]:
+        return self.graph.dimensions
+
+
+class _ExpandedTupleDataCoordinate(_CompleteTupleDataCoordinate, ExpandedDataCoordinate):
+
+    __slots__ = ("_records",)
+
+    def __init__(self, graph: DimensionGraph, values: Tuple[DataIdValue, ...], *,
+                 records: Mapping[str, Optional[DimensionRecord]]):
+        super().__init__(graph, values)
+        self._records = records
+
+    def record(self, key: Union[DimensionElement, str]) -> Optional[DimensionRecord]:
+        # Docstring inherited from ExpandedDataCoordinate
+        if isinstance(key, DimensionElement):
+            return self._records[key.name]
+        else:
+            return self._records[key]
+
+
+class EmptyDataCoordinate(MinimalDataCoordinate, ExpandedDataCoordinate):
+
+    __slots__ = ("_universe",)
+
+    def __init__(self, universe: DimensionUniverse):
+        self._universe = universe
+
+    @staticmethod
+    def fromValues(graph: DimensionGraph, values: Tuple[DataIdValue, ...]) -> EmptyDataCoordinate:
+        assert not graph and not values
+        return EmptyDataCoordinate(graph.universe)
+
+    @staticmethod
+    def fromMapping(graph: DimensionGraph, mapping: Mapping[str, DataIdValue]) -> EmptyDataCoordinate:
+        assert not graph
+        return EmptyDataCoordinate(graph.universe)
+
+    @property
+    def graph(self) -> DimensionGraph:
+        return self._universe.empty
+
+    @property
+    def universe(self) -> DimensionUniverse:
+        return self._universe
+
+    @property
+    def names(self) -> AbstractSet[str]:
+        return frozenset()
+
+    def __getitem__(self, key: DataIdKey) -> DataIdValue:
+        raise KeyError(f"Empty data ID indexed with {key}.")
+
+    def keys(self) -> NamedValueSet[Dimension]:
+        return NamedValueSet()
+
+    def __len__(self) -> int:
+        return 0
+
+    def __iter__(self) -> Iterator[Dimension]:
+        return iter(())
+
+    def record(self, key: Union[DimensionElement, str]) -> Optional[DimensionRecord]:
+        return None
+
+    def subset(self, graph: DimensionGraph) -> EmptyDataCoordinate:
+        if graph:
+            raise KeyError(f"Cannot subset EmptyDataCoordinate with non-empty graph {graph}.")
+        return self
