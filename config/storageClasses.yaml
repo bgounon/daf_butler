@@ -23,6 +23,14 @@ storageClasses:
     pytype: lsst.afw.cameraGeom.Camera
   Detector:
     pytype: lsst.afw.cameraGeom.Detector
+  Box2I:
+    pytype: lsst.geom.Box2I
+  Extent2I:
+    pytype: lsst.geom.Extent2I
+  Point2I:
+    pytype: lsst.geom.Point2I
+  Filter:
+    pytype: lsst.afw.image.Filter
   Image: &Image
     pytype: lsst.afw.image.Image
     assembler: lsst.daf.butler.assemblers.exposureAssembler.ExposureAssembler
@@ -115,6 +123,11 @@ storageClasses:
       metadata: PropertyList
       detector: Detector
       validPolygon: Polygon
+    readComponents:
+      bbox: Box2I
+      filter: Filter
+      dimensions: Extent2I
+      xy0: Point2I
   ExposureF:
     inheritsFrom: Exposure
     pytype: lsst.afw.image.ExposureF
