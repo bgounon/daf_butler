@@ -318,8 +318,9 @@ class FileLikeDatastore(GenericBaseDatastore):
                 # Use empty string since we want this to be part of the
                 # primary key.
                 component = NULLSTR
+            path = info.path if info.path is not None else NULLSTR
             records.append(
-                dict(dataset_id=ref.id, formatter=info.formatter, path=info.path,
+                dict(dataset_id=ref.id, formatter=info.formatter, path=path,
                      storage_class=info.storageClass.name, component=component,
                      checksum=info.checksum, file_size=info.file_size)
             )
@@ -338,9 +339,10 @@ class FileLikeDatastore(GenericBaseDatastore):
             storageClass = self.storageClassFactory.getStorageClass(record["storage_class"])
             component = record["component"] if (record["component"]
                                                 and record["component"] != NULLSTR) else None
+            path = None if record["path"] == NULLSTR else record["path"]
 
             info = StoredFileInfo(formatter=record["formatter"],
-                                  path=record["path"],
+                                  path=path,
                                   storageClass=storageClass,
                                   component=component,
                                   checksum=record["checksum"],
@@ -389,7 +391,7 @@ class FileLikeDatastore(GenericBaseDatastore):
         records = self.getStoredItemsInfo(ref)
 
         # Use the path to determine the location
-        return [(self.locationFactory.fromPath(r.path), r) for r in records]
+        return [(self.locationFactory.fromPath(r.path) if r.path is not None else None, r) for r in records]
 
     def _can_remove_dataset_artifact(self, ref: DatasetIdRef, location: Location) -> bool:
         """Check that there is only one dataset associated with the
@@ -736,7 +738,10 @@ class FileLikeDatastore(GenericBaseDatastore):
         fileLocations = self._get_dataset_locations_info(ref)
         if not fileLocations:
             return False
-        for location, _ in fileLocations:
+        for location, storedFileInfo in fileLocations:
+            if storedFileInfo.path is None:
+                # Composite formatter
+                continue
             if not self._artifact_exists(location):
                 return False
 
@@ -822,6 +827,9 @@ class FileLikeDatastore(GenericBaseDatastore):
 
         else:
             for location, storedFileInfo in fileLocations:
+                if storedFileInfo.path is None:
+                    # composite formatter
+                    continue
                 if storedFileInfo.component is None:
                     raise RuntimeError(f"Unexpectedly got no component name for a component at {location}")
                 components[storedFileInfo.component] = ButlerURI(location.uri)
@@ -911,6 +919,10 @@ class FileLikeDatastore(GenericBaseDatastore):
 
                 component = getInfo.component
 
+                if component is None and getInfo.location is None:
+                    # This is the composite formatter
+                    continue
+
                 if component is None:
                     raise RuntimeError(f"Internal error in datastore assembly of {ref}")
 
@@ -987,6 +999,22 @@ class FileLikeDatastore(GenericBaseDatastore):
                 compRef = ref.makeComponentRef(component)
                 storedInfo = self._write_in_memory_to_artifact(componentInfo.component, compRef)
                 artifacts.append((compRef, storedInfo))
+            # in order to allow us to discover the composite Formatter we
+            # also need to write an entry with an undefined filename
+            # In some edge cases where something is always disassembled we
+            # might not know the formatter. In that case we can warn but
+            # allow it and fail later if someone tries to get a read-only
+            # component.
+            try:
+                _, formatter = self._prepare_for_put(inMemoryDataset, ref)
+            except DatasetTypeNotSupportedError:
+                log.warning("No formatter associated with composite dataset (%s). "
+                            "Read-only components will not be supported.", ref)
+            else:
+                compositeInfo = StoredFileInfo(formatter=formatter, path=None,
+                                               storageClass=ref.datasetType.storageClass,
+                                               component=None, file_size=0, checksum=None)
+                artifacts.append((ref, compositeInfo))
         else:
             # Write the entire thing out
             storedInfo = self._write_in_memory_to_artifact(inMemoryDataset, ref)
@@ -1026,6 +1054,9 @@ class FileLikeDatastore(GenericBaseDatastore):
                 raise FileNotFoundError(err_msg)
 
         for location, storedFileInfo in fileLocations:
+            if storedFileInfo.path is None:
+                # Composite formatter
+                continue
             if not self._artifact_exists(location):
                 err_msg = f"Dataset is known to datastore {self.name} but " \
                           f"associated artifact ({location.uri}) is missing"
@@ -1071,7 +1102,10 @@ class FileLikeDatastore(GenericBaseDatastore):
                     else:
                         raise FileNotFoundError(err_msg)
 
-                for location, _ in fileLocations:
+                for location, storedFileInfo in fileLocations:
+                    if storedFileInfo.path is None:
+                        # Composite formatter
+                        continue
 
                     if not self._artifact_exists(location):
                         err_msg = f"Dataset {location.uri} no longer present in datastore {self.name}"

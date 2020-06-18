@@ -48,7 +48,7 @@ class StoredFileInfo(StoredDatastoreItemInfo):
                  "checksum", "file_size"}
 
     def __init__(self, formatter: FormatterParameter,
-                 path: str,
+                 path: Optional[str],
                  storageClass: StorageClass,
                  component: Optional[str],
                  checksum: Optional[str],
