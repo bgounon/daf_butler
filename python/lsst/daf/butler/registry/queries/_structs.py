@@ -29,6 +29,7 @@ from sqlalchemy.sql import ColumnElement
 
 from ...core import (
     DataCoordinate,
+    DataIdKey,
     DatasetType,
     Dimension,
     DimensionElement,
@@ -289,7 +290,7 @@ class QueryColumns:
     (`NamedKeyDict` [ `DatasetType`, `DatasetQueryColumns` ] ).
     """
 
-    def getKeyColumn(self, dimension: Dimension) -> ColumnElement:
+    def getKeyColumn(self, dimension: DataIdKey) -> ColumnElement:
         """ Return one of the columns in self.keys for the given dimension.
 
         The column selected is an implentation detail but is guaranteed to
@@ -297,8 +298,8 @@ class QueryColumns:
 
         Parameters
         ----------
-        dimension : `Dimension`
-            Element for which to obtain a key column.
+        dimension : `Dimension` or `str`
+            Dimension for which to obtain a key column.
 
         Returns
         -------
