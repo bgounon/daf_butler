@@ -32,6 +32,7 @@ datastore:
     datasetType.component: lsst.daf.butler.formatters.yaml.YamlFormatter
     pvi: lsst.daf.butler.formatters.pickle.PickleFormatter
     visit+physical_filter+instrument: lsst.daf.butler.tests.testFormatters.LenientYamlFormatter
+    StructuredComposite: lsst.daf.butler.formatters.yaml.YamlFormatter
     instrument<DummyHSC>:
       pvi: lsst.daf.butler.formatters.json.JsonFormatter
       StructuredData: lsst.daf.butler.formatters.pickle.PickleFormatter

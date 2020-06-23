@@ -43,6 +43,7 @@ datastore:
       parameters:
         max: 5
         comment: Additional commentary
+    StructuredComposite: lsst.daf.butler.formatters.yaml.YamlFormatter
     instrument<DummyHSC>:
       pvi: lsst.daf.butler.formatters.json.JsonFormatter
       StructuredData: lsst.daf.butler.formatters.pickle.PickleFormatter
