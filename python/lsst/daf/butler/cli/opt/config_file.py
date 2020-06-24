@@ -29,17 +29,22 @@ class config_file_option:  # noqa: N801
 
     defaultHelp = "Path to a pex config override to be included after the Instrument config overrides are " \
                   "applied."
+    defaultMetavar = None
+    optionFlags = ("-C", "--config-file")
+    optionKey = "config_file"
 
-    def __init__(self, multiple=False, help=defaultHelp, required=False):
+    def __init__(self, metavar=defaultMetavar, multiple=False, help=defaultHelp, required=False):
         self.callback = split_commas if multiple else None
         self.help = help
+        self.metavar = metavar
         self.multiple = multiple
         self.required = required
 
     def __call__(self, f):
-        return click.option("-C", "--config-file",
+        return click.option(*self.optionFlags,
                             callback=self.callback,
                             help=self.help,
+                            metavar=self.metavar,
                             multiple=self.multiple,
                             required=self.required,
                             type=click.STRING)(f)

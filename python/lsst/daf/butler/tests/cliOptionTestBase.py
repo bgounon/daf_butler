@@ -608,3 +608,11 @@ class OptHelpTest(OptTestBase):
                       ["--help"],
                       self._verify_forHelp,
                       helpText)
+
+    def test_metavar(self):
+        cli = CliFactory.noOp(self)
+        if hasattr(cli, "metavar"):
+            self.run_test(CliFactory.noOp(self),
+                          ["--help"],
+                          self._verify_forHelp,
+                          f"{self.optionFlag} {cli.metavar}")

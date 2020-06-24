@@ -47,6 +47,9 @@ class config_option:  # noqa: N801
     """
 
     defaultHelp = "Config override, as a key-value pair."
+    metavar = "LABEL:NAME=VALUE"
+    optionFlags = ("-c", "--config")
+    optionKey = "config"
 
     def __init__(self, help=defaultHelp, multiple=False, required=False, split_kv=False):
         self.help = help
@@ -62,8 +65,9 @@ class config_option:  # noqa: N801
             self.callback = None
 
     def __call__(self, f):
-        return click.option("-c", "--config",
+        return click.option(*self.optionFlags,
                             callback=self.callback,
                             help=self.help,
+                            metavar=self.metavar,
                             multiple=self.multiple,
                             required=self.required)(f)
