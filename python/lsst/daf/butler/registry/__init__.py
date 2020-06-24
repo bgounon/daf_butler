@@ -25,6 +25,7 @@ from ._registry import *
 from ._dbAuth import *
 from ._collectionType import *
 from ._dataCoordinateIterable import *
+from ._dataCoordinateSet import *
 
 from . import wildcards
 from .wildcards import CollectionSearch, DatasetTypeRestriction

@@ -49,6 +49,7 @@ from ..core import (
 
 if TYPE_CHECKING:
     from .simpleQuery import SimpleQuery
+    from ._dataCoordinateSet import DataCoordinateSet
 
 
 D = TypeVar("D", bound=DataCoordinate)
@@ -64,8 +65,9 @@ class DataCoordinateIterable(Iterable[D]):
 
     @staticmethod
     def fromSet(dataIds: AbstractSet[D], graph: DimensionGraph, *,
-                dtype: Type[DataCoordinate] = DataCoordinate) -> DataCoordinateIterable[D]:
-        return _NativeSetDataCoordinateIterable(graph, dataIds, dtype=dtype)
+                dtype: Type[DataCoordinate] = DataCoordinate) -> DataCoordinateSet[D]:
+        from ._dataCoordinateSet import DataCoordinateSet
+        return DataCoordinateSet(graph, dataIds, dtype=dtype)
 
     @property
     @abstractmethod
@@ -86,6 +88,11 @@ class DataCoordinateIterable(Iterable[D]):
             return self  # type: ignore
         else:
             return _MinimalViewDataCoordinateIterable(self)
+
+    def toSet(self) -> DataCoordinateSet[D]:
+        # TODO: docs
+        from ._dataCoordinateSet import DataCoordinateSet
+        return DataCoordinateSet(self.graph, set(self), dtype=self.dtype)
 
     def constrain(self, query: SimpleQuery, columns: Callable[[str], sqlalchemy.sql.ColumnElement]) -> None:
         # TODO: docs
@@ -139,46 +146,6 @@ class _ScalarDataCoordinateIterable(DataCoordinateIterable[D]):
         # implementations return their own type, not just their most
         # appropriate ABC.
         return _ScalarDataCoordinateIterable(self._dataId.subset(graph))  # type: ignore
-
-
-class _NativeSetDataCoordinateIterable(DataCoordinateIterable[D]):
-
-    __slots__ = ("_graph", "_dtype", "_native")
-
-    def __init__(self, graph: DimensionGraph, native: AbstractSet[D], *,
-                 dtype: Type[DataCoordinate] = DataCoordinate):
-        self._graph = graph
-        self._dtype = dtype
-        self._native = native
-
-    def __iter__(self) -> Iterator[D]:
-        return iter(self._native)
-
-    def __len__(self) -> int:
-        return len(self._native)
-
-    def __contains__(self, key: Any) -> bool:
-        key = DataCoordinate.standardize(key, graph=self.graph)
-        return key in self._native
-
-    @property
-    def graph(self) -> DimensionGraph:
-        return self._graph
-
-    @property
-    def dtype(self) -> Type[DataCoordinate]:
-        return self._dtype
-
-    def subset(self, graph: DimensionGraph) -> _NativeSetDataCoordinateIterable[D]:
-        if not graph.issubset(self.graph):
-            raise ValueError(f"{graph} is not a subset of {self.graph}")
-        if graph == self.graph:
-            return self
-        # See comment in _ScalarDataCoordinateIterable on type: ignore there.
-        return _NativeSetDataCoordinateIterable(
-            graph,
-            {dataId.subset(graph) for dataId in self._native}  # type: ignore
-        )
 
 
 class _MinimalViewDataCoordinateIterable(DataCoordinateIterable[MinimalDataCoordinate], Generic[D]):
