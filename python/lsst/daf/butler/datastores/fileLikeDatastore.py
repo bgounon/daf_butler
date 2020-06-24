@@ -309,11 +309,24 @@ class FileLikeDatastore(GenericBaseDatastore):
     def addStoredItemInfo(self, refs: Iterable[DatasetRef], infos: Iterable[StoredFileInfo]) -> None:
         # Docstring inherited from GenericBaseDatastore
         records = []
+        foundNull = 0
         for ref, info in zip(refs, infos):
             # Component should come from ref and fall back on info
             component = ref.datasetType.component()
             if component is None and info.component is not None:
                 component = info.component
+
+            # Can not have component not None and path None
+            # since that would imply we had no artifact for this component
+            if component is not None and info.path is None:
+                raise RuntimeError(f"Internal error in datastore {self.name}:"
+                                   f" Component is {component} but no path for artifact")
+
+            # Check that we only have one null entry with no component and
+            # no path
+            if component is None and info.path is None:
+                foundNull += 1
+
             if component is None:
                 # Use empty string since we want this to be part of the
                 # primary key.
@@ -324,6 +337,12 @@ class FileLikeDatastore(GenericBaseDatastore):
                      storage_class=info.storageClass.name, component=component,
                      checksum=info.checksum, file_size=info.file_size)
             )
+
+        if foundNull > 1 or (len(refs) == 1 and foundNull > 0):
+            raise RuntimeError(f"Internal error in datastore {self.name}"
+                               " Component and path are None in too many records "
+                               f"(nulls: {foundNull} / records: {len(refs)}).")
+
         self._table.insert(*records)
 
     def getStoredItemsInfo(self, ref: DatasetIdRef) -> List[StoredFileInfo]:
@@ -340,6 +359,10 @@ class FileLikeDatastore(GenericBaseDatastore):
             component = record["component"] if (record["component"]
                                                 and record["component"] != NULLSTR) else None
             path = None if record["path"] == NULLSTR else record["path"]
+
+            if path is None and component is not None:
+                raise RuntimeError(f"Internal error in datastore {self.name} reading "
+                                   f"component {component} information from registry.")
 
             info = StoredFileInfo(formatter=record["formatter"],
                                   path=path,
@@ -488,7 +511,12 @@ class FileLikeDatastore(GenericBaseDatastore):
             # The ref itself could be a component if the dataset was
             # disassembled by butler, or we disassembled in datastore and
             # components came from the datastore records
-            component = storedFileInfo.component if storedFileInfo.component else refComponent
+            # We should not set component for a null entry that has a missing
+            # path
+            if location is None:
+                component = None
+            else:
+                component = storedFileInfo.component if storedFileInfo.component else refComponent
 
             fileGetInfo.append(DatastoreFileGetInformation(location, formatter, storedFileInfo,
                                                            assemblerParams, component, readStorageClass))
