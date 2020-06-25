@@ -28,6 +28,7 @@ from typing import (
     Any,
     Mapping,
     Optional,
+    Set,
 )
 
 import yaml
@@ -163,6 +164,15 @@ class MetricsExampleFormatter(Formatter):
             yaml.dump(inMemoryDataset._asdict(), fd)
         return fileDescriptor.location.pathInStore
 
+    def selectResponsibleComponent(self, readComponent: str, fromComponents: Set[Optional[str]]) -> str:
+        forwarderMap = {
+            "counter": "data",
+        }
+        forwarder = forwarderMap.get(readComponent)
+        if forwarder is not None and forwarder in fromComponents:
+            return forwarder
+        raise ValueError(f"Can not calculate read component {readComponent} from {fromComponents}")
+
 
 class MetricsExampleDataFormatter(Formatter):
     """A specialist test formatter for the data component of a MetricsExample.
@@ -221,7 +231,7 @@ class MetricsExampleDataFormatter(Formatter):
             return inMemoryDataset
 
         if component == "counter":
-            return len(inMemoryDataset.data)
+            return len(inMemoryDataset)
         raise ValueError(f"Unsupported component: {component}")
 
     def write(self, inMemoryDataset: Any) -> str:

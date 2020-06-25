@@ -934,7 +934,34 @@ class FileLikeDatastore(GenericBaseDatastore):
         allGetInfo = self._prepare_for_get(ref, parameters)
         refComponent = ref.datasetType.component()
 
-        if len(allGetInfo) > 1 and not refComponent:
+        # Supplied storage class for validation
+        refStorageClass = ref.datasetType.storageClass
+
+        # Create mapping from component name to related info
+        allComponents = {i.component: i for i in allGetInfo}
+
+        isDisassembled = len(allGetInfo) > 1
+
+        # Look for the special case where we are disassembled but the
+        # component is a read-only component that was not written during
+        # disassembly. For this scenario we need to check that the
+        # component requested is listed as a read-only component for the
+        # composite storage class
+        isDisassembledReadOnlyComponent = False
+        if isDisassembled and refComponent:
+            # If we are looking for a composite storage class and this
+            # composite was disassembled, we can only do this check if
+            # the datastore recorded a composite storage class on put.
+            # If it did not find one, we can not check so assume it is
+            # a normal component.
+            if None in allComponents:
+                compositeStorageClass = allComponents[None].info.storageClass
+                isDisassembledReadOnlyComponent = refComponent in compositeStorageClass.readComponents
+            else:
+                isDisassembledReadOnlyComponent = False
+
+        if isDisassembled and not refComponent:
+
             # This was a disassembled dataset spread over multiple files
             # and we need to put them all back together again.
             # Read into memory and then assemble
@@ -971,19 +998,83 @@ class FileLikeDatastore(GenericBaseDatastore):
             # Process parameters
             return ref.datasetType.storageClass.assembler().handleParameters(inMemoryDataset,
                                                                              parameters=unusedParams)
+        elif isDisassembledReadOnlyComponent:
+            compositeInfo = allComponents.get(None)
+            if compositeInfo is None:
+                raise RuntimeError(f"Unable to retrieve read-only component '{refComponent}' since"
+                                   "no formatter was stored with the composite during disassembly.")
+            compositeFormatter = compositeInfo.formatter
+
+            # Assume that every read-only component can be calculated by
+            # forwarding the request to a single read/write component.
+            # Rather than guessing which rw component is the right one by
+            # scanning each for a read-only component of the same name,
+            # we ask the composite formatter directly which one is best to
+            # use.
+            if refComponent is None:
+                # Mainly for mypy
+                raise RuntimeError(f"Internal error in datastore {self.name}: component can not be None here")
+            forwardedComponent = compositeFormatter.selectResponsibleComponent(refComponent,
+                                                                               set(allComponents))
+
+            # Select the relevant component
+            rwInfo = allComponents[forwardedComponent]
+
+            # Unfortunately the FileDescriptor inside the formatter will have
+            # the wrong storage class so we need to create a new one given
+            # the immutability
+            writeStorageClass = rwInfo.info.storageClass
+
+            # We may need to put some thought into parameters for read
+            # components but for now forward them on as is
+            readFormatter = type(rwInfo.formatter)(FileDescriptor(rwInfo.location,
+                                                                  readStorageClass=refStorageClass,
+                                                                  storageClass=writeStorageClass,
+                                                                  parameters=parameters),
+                                                   ref.dataId)
+
+            # The assembler can not receive any parameter requests for a
+            # read-only component at this time since the assembler will
+            # see the storage class of the read-only component and those
+            # parameters will have to be handled by the formatter on the
+            # forwarded storage class.
+            assemblerParams = {}
+
+            # Need to created a new info that specifies the read-only
+            # component and associated storage class
+            readInfo = DatastoreFileGetInformation(rwInfo.location, readFormatter,
+                                                   rwInfo.info, assemblerParams,
+                                                   refComponent, refStorageClass)
+
+            return self._read_artifact_into_memory(readInfo, ref, isComponent=True)
 
         else:
-            # Single file request or component from that composite file
-            allComponents = {i.component: i for i in allGetInfo}
-            for lookup in (refComponent, None):
-                if lookup in allComponents:
-                    getInfo = allComponents[lookup]
-                    break
+
+            # Indicate whether we are reading a component from this
+            # artifact using the formatter
+            isReadingComponent = False
+
+            if refComponent and refComponent in allComponents:
+                # Single file request of a component that exists
+                getInfo = allComponents[refComponent]
+
+                # We are only reading a component if this is a composite
+                # Else it really is the component.
+                isReadingComponent = not isDisassembled
+
+            elif None in allComponents:
+                # Asking for the composite
+                getInfo = allComponents[None]
+
+                isReadingComponent = refComponent is not None
+
             else:
+                # Should not be possible since we should always store
+                # the composite information
                 raise FileNotFoundError(f"Component {refComponent} not found "
                                         f"for ref {ref} in datastore {self.name}")
 
-            return self._read_artifact_into_memory(getInfo, ref, isComponent=getInfo.component is not None)
+            return self._read_artifact_into_memory(getInfo, ref, isComponent=isReadingComponent)
 
     @transactional
     def put(self, inMemoryDataset: Any, ref: DatasetRef) -> None:

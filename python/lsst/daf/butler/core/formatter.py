@@ -385,6 +385,35 @@ class Formatter(metaclass=ABCMeta):
 
         return supported, unsupported
 
+    def selectResponsibleComponent(self, readComponent: str, fromComponents: Set[Optional[str]]) -> str:
+        """Given a possible set of components to choose from, return the
+        component that should be used to calculate the requested read
+        component.
+
+        Parameters
+        ----------
+        readComponent : `str`
+            The component that is being requested.
+        fromComponents : `set` of `str`
+            The available set of component options from which that read
+            component can be derived. `None` can be included but should
+            be ignored.
+
+        Returns
+        -------
+        required : `str`
+            The component that should be used.
+
+        Raises
+        ------
+        NotImplementedError
+            Raised if this formatter refuses to answer the question.
+        ValueError
+            Raised if this formatter can not determine a relevant component
+            from the supplied options.
+        """
+        raise NotImplementedError("This formatter does not support read components")
+
 
 class FormatterFactory:
     """Factory for `Formatter` instances.

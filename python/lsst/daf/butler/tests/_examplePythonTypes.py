@@ -263,6 +263,11 @@ class ListAssembler(CompositeAssembler):
             inMemoryDataset = inMemoryDataset[use["slice"]]
         return inMemoryDataset
 
+    def getComponent(self, composite, componentName: str):
+        if componentName == "counter":
+            return len(composite)
+        return super().getComponent(composite, componentName)
+
 
 class MetricsAssembler(CompositeAssembler):
     """Parameter handler for parameters using Metrics"""
@@ -292,3 +297,8 @@ class MetricsAssembler(CompositeAssembler):
         if use:
             inMemoryDataset.data = inMemoryDataset.data[use["slice"]]
         return inMemoryDataset
+
+    def getComponent(self, composite, componentName: str):
+        if componentName == "counter":
+            return len(composite.data)
+        return super().getComponent(composite, componentName)

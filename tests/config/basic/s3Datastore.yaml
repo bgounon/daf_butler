@@ -27,6 +27,9 @@ datastore:
     datasetType.component: lsst.daf.butler.formatters.yaml.YamlFormatter
     pvi: lsst.daf.butler.formatters.pickle.PickleFormatter
     StructuredComposite: lsst.daf.butler.formatters.yaml.YamlFormatter
+    StructuredCompositeReadComp: lsst.daf.butler.tests.testFormatters.MetricsExampleFormatter
+    StructuredCompositeReadCompNoDisassembly: lsst.daf.butler.tests.testFormatters.MetricsExampleFormatter
+    StructuredDataDataTest: lsst.daf.butler.tests.testFormatters.MetricsExampleDataFormatter
     instrument<DummyHSC>:
       pvi: lsst.daf.butler.formatters.json.JsonFormatter
       StructuredData: lsst.daf.butler.formatters.pickle.PickleFormatter

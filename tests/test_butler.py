@@ -267,7 +267,6 @@ class ButlerPutGetTests:
 
         if storageClass.isComposite():
             # Check that components can be retrieved
-            # ref.components will only be populated in certain cases
             metricOut = butler.get(ref.datasetType.name, dataId)
             compNameS = ref.datasetType.componentTypeName("summary")
             compNameD = ref.datasetType.componentTypeName("data")
@@ -275,6 +274,10 @@ class ButlerPutGetTests:
             self.assertEqual(summary, metric.summary)
             data = butler.get(compNameD, dataId)
             self.assertEqual(data, metric.data)
+
+            if "counter" in storageClass.readComponents:
+                count = butler.get(ref.datasetType.componentTypeName("counter"), dataId)
+                self.assertEqual(count, len(data))
 
             compRef = butler.registry.findDataset(compNameS, dataId, collections=butler.collections)
             self.assertTrue(compRef.hasParentId)
@@ -413,7 +416,7 @@ class ButlerTests(ButlerPutGetTests):
         self.assertEqual(uri.fragment, "predicted", f"Checking for fragment in {uri}")
 
     def testCompositePutGetVirtual(self):
-        storageClass = self.storageClassFactory.getStorageClass("StructuredComposite")
+        storageClass = self.storageClassFactory.getStorageClass("StructuredCompositeReadComp")
         butler = self.runPutGetTest(storageClass, "test_metric_comp")
 
         # Should be disassembled
