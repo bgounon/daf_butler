@@ -279,6 +279,10 @@ class ButlerPutGetTests:
                 count = butler.get(ref.datasetType.componentTypeName("counter"), dataId)
                 self.assertEqual(count, len(data))
 
+                count = butler.get(ref.datasetType.componentTypeName("counter"), dataId,
+                                   parameters={"slice": slice(stop)})
+                self.assertEqual(count, stop)
+
             compRef = butler.registry.findDataset(compNameS, dataId, collections=butler.collections)
             self.assertTrue(compRef.hasParentId)
 

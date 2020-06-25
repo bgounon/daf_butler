@@ -474,9 +474,6 @@ class FileLikeDatastore(GenericBaseDatastore):
         # The storage class we want to use eventually
         refStorageClass = ref.datasetType.storageClass
 
-        # Check that the supplied parameters are suitable for the type read
-        refStorageClass.validateParameters(parameters)
-
         if len(fileLocations) > 1:
             disassembled = True
         else:
@@ -963,6 +960,9 @@ class FileLikeDatastore(GenericBaseDatastore):
 
         if isDisassembled and not refComponent:
 
+            # Check that the supplied parameters are suitable for the type read
+            refStorageClass.validateParameters(parameters)
+
             # This was a disassembled dataset spread over multiple files
             # and we need to put them all back together again.
             # Read into memory and then assemble
@@ -1021,6 +1021,11 @@ class FileLikeDatastore(GenericBaseDatastore):
             # Select the relevant component
             rwInfo = allComponents[forwardedComponent]
 
+            # For now assume that read parameters are validated against
+            # the real component and not the requested component
+            forwardedStorageClass = rwInfo.formatter.fileDescriptor.readStorageClass
+            forwardedStorageClass.validateParameters(parameters)
+
             # Unfortunately the FileDescriptor inside the formatter will have
             # the wrong storage class so we need to create a new one given
             # the immutability
@@ -1074,6 +1079,17 @@ class FileLikeDatastore(GenericBaseDatastore):
                 # the composite information
                 raise FileNotFoundError(f"Component {refComponent} not found "
                                         f"for ref {ref} in datastore {self.name}")
+
+            # For a disassembled component we can validate parametersagainst
+            # the component storage class directly
+            if isDisassembled:
+                refStorageClass.validateParameters(parameters)
+            else:
+                # For an assembled composite this could be a read-only
+                # component derived from a real component. The validity
+                # of the parameters is not clear. For now validate against
+                # the composite storage class
+                getInfo.formatter.fileDescriptor.storageClass.validateParameters(parameters)
 
             return self._read_artifact_into_memory(getInfo, ref, isComponent=isReadingComponent)
 
