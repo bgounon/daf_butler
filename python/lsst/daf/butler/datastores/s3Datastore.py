@@ -130,6 +130,9 @@ class S3Datastore(FileLikeDatastore):
                                    ref: DatasetRef, isComponent: bool = False) -> Any:
         location = getInfo.location
 
+        if location is None:
+            raise RuntimeError(f"Unexpectedly got null dataset location for ref {ref}")
+
         # since we have to make a GET request to S3 anyhow (for download) we
         # might as well use the HEADER metadata for size comparison instead.
         # s3CheckFileExists would just duplicate GET/LIST charges in this case.
@@ -171,6 +174,12 @@ class S3Datastore(FileLikeDatastore):
         # tempfile (when formatter does not support to/from/Bytes). This is S3
         # equivalent of PosixDatastore formatter.read try-except block.
         formatter = getInfo.formatter
+
+        # Consistency check for mypy
+        if formatter is None:
+            raise RuntimeError(f"Internal error in datastore {self.name}: Null formatter encountered"
+                               f" for {ref}")
+
         try:
             result = formatter.fromBytes(serializedDataset,
                                          component=getInfo.component if isComponent else None)

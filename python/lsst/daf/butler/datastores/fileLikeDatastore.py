@@ -106,10 +106,10 @@ class DatastoreFileGetInformation:
     a Datastore.
     """
 
-    location: Location
+    location: Optional[Location]
     """The location from which to read the dataset."""
 
-    formatter: Formatter
+    formatter: Optional[Formatter]
     """The `Formatter` to use to deserialize the dataset."""
 
     info: StoredFileInfo
@@ -123,6 +123,9 @@ class DatastoreFileGetInformation:
 
     readStorageClass: StorageClass
     """The `StorageClass` of the dataset being read."""
+
+    formatterClass: Type[Formatter]
+    """The formatter class to be used."""
 
 
 class FileLikeDatastore(GenericBaseDatastore):
@@ -310,7 +313,11 @@ class FileLikeDatastore(GenericBaseDatastore):
         # Docstring inherited from GenericBaseDatastore
         records = []
         foundNull = 0
+        nRefs = 0
         for ref, info in zip(refs, infos):
+            # Count how many refs are in this iterable as we go
+            nRefs += 1
+
             # Component should come from ref and fall back on info
             component = ref.datasetType.component()
             if component is None and info.component is not None:
@@ -338,10 +345,10 @@ class FileLikeDatastore(GenericBaseDatastore):
                      checksum=info.checksum, file_size=info.file_size)
             )
 
-        if foundNull > 1 or (len(refs) == 1 and foundNull > 0):
+        if foundNull > 1 or (nRefs == 1 and foundNull > 0):
             raise RuntimeError(f"Internal error in datastore {self.name}"
                                " Component and path are None in too many records "
-                               f"(nulls: {foundNull} / records: {len(refs)}).")
+                               f"(nulls: {foundNull} / records: {nRefs}).")
 
         self._table.insert(*records)
 
@@ -395,7 +402,8 @@ class FileLikeDatastore(GenericBaseDatastore):
         # Docstring inherited from GenericBaseDatastore
         self._table.delete(dataset_id=ref.id)
 
-    def _get_dataset_locations_info(self, ref: DatasetIdRef) -> List[Tuple[Location, StoredFileInfo]]:
+    def _get_dataset_locations_info(self, ref: DatasetIdRef) -> List[Tuple[Optional[Location],
+                                                                           StoredFileInfo]]:
         r"""Find all the `Location`\ s  of the requested dataset in the
         `Datastore` and the associated stored file information.
 
@@ -494,16 +502,26 @@ class FileLikeDatastore(GenericBaseDatastore):
             else:
                 readStorageClass = refStorageClass
 
-            formatter = getInstanceOf(storedFileInfo.formatter,
-                                      FileDescriptor(location, readStorageClass=readStorageClass,
-                                                     storageClass=writeStorageClass, parameters=parameters),
-                                      ref.dataId)
+            if location is not None:
+                formatter = getInstanceOf(storedFileInfo.formatter,
+                                          FileDescriptor(location, readStorageClass=readStorageClass,
+                                                         storageClass=writeStorageClass,
+                                                         parameters=parameters),
+                                          ref.dataId)
+                formatterClass = type(formatter)
 
-            _, notFormatterParams = formatter.segregateParameters()
+                _, notFormatterParams = formatter.segregateParameters()
 
-            # Of the remaining parameters, extract the ones supported by
-            # this StorageClass (for components not all will be handled)
-            assemblerParams = readStorageClass.filterParameters(notFormatterParams)
+                # Of the remaining parameters, extract the ones supported by
+                # this StorageClass (for components not all will be handled)
+                assemblerParams = readStorageClass.filterParameters(notFormatterParams)
+
+            else:
+                formatter = None
+                formatterClass = getClassOf(storedFileInfo.formatter)
+
+                # No parameters for assembler with the composite formatter
+                assemblerParams = {}
 
             # The ref itself could be a component if the dataset was
             # disassembled by butler, or we disassembled in datastore and
@@ -516,7 +534,8 @@ class FileLikeDatastore(GenericBaseDatastore):
                 component = storedFileInfo.component if storedFileInfo.component else refComponent
 
             fileGetInfo.append(DatastoreFileGetInformation(location, formatter, storedFileInfo,
-                                                           assemblerParams, component, readStorageClass))
+                                                           assemblerParams, component, readStorageClass,
+                                                           formatterClass))
 
         return fileGetInfo
 
@@ -765,7 +784,7 @@ class FileLikeDatastore(GenericBaseDatastore):
         if not fileLocations:
             return False
         for location, storedFileInfo in fileLocations:
-            if storedFileInfo.path is None:
+            if storedFileInfo.path is None or location is None:
                 # Composite formatter
                 continue
             if not self._artifact_exists(location):
@@ -849,16 +868,21 @@ class FileLikeDatastore(GenericBaseDatastore):
 
         if len(fileLocations) == 1:
             # No disassembly so this is the primary URI
-            primary = ButlerURI(fileLocations[0][0].uri)
+            primaryLocation, _ = fileLocations[0]
+            if primaryLocation is None:
+                # mypy appeasement
+                raise RuntimeError(f"Unexpectedly encountered no location for dataset {ref}")
+            primary = ButlerURI(primaryLocation.uri)
 
         else:
-            for location, storedFileInfo in fileLocations:
-                if storedFileInfo.path is None:
+            for disCompLocation, storedFileInfo in fileLocations:
+                if storedFileInfo.path is None or disCompLocation is None:
                     # composite formatter
                     continue
                 if storedFileInfo.component is None:
-                    raise RuntimeError(f"Unexpectedly got no component name for a component at {location}")
-                components[storedFileInfo.component] = ButlerURI(location.uri)
+                    raise RuntimeError("Unexpectedly got no component name for a component"
+                                       f" at {disCompLocation}")
+                components[storedFileInfo.component] = ButlerURI(disCompLocation.uri)
 
         return primary, components
 
@@ -1004,7 +1028,7 @@ class FileLikeDatastore(GenericBaseDatastore):
             if compositeInfo is None:
                 raise RuntimeError(f"Unable to retrieve read-only component '{refComponent}' since"
                                    "no formatter was stored with the composite during disassembly.")
-            compositeFormatter = compositeInfo.formatter
+            compositeFormatter = compositeInfo.formatterClass
 
             # Assume that every read-only component can be calculated by
             # forwarding the request to a single read/write component.
@@ -1020,6 +1044,11 @@ class FileLikeDatastore(GenericBaseDatastore):
 
             # Select the relevant component
             rwInfo = allComponents[forwardedComponent]
+            if rwInfo.formatter is None:
+                # for mypy
+                raise RuntimeError(f"Unexpectedly got null formatter for component {forwardedComponent}")
+            if rwInfo.location is None:
+                raise RuntimeError(f"Unexpectedly got null file location for components {forwardedComponent}")
 
             # For now assume that read parameters are validated against
             # the real component and not the requested component
@@ -1044,13 +1073,14 @@ class FileLikeDatastore(GenericBaseDatastore):
             # see the storage class of the read-only component and those
             # parameters will have to be handled by the formatter on the
             # forwarded storage class.
-            assemblerParams = {}
+            assemblerParams: Dict[str, Any] = {}
 
             # Need to created a new info that specifies the read-only
             # component and associated storage class
             readInfo = DatastoreFileGetInformation(rwInfo.location, readFormatter,
                                                    rwInfo.info, assemblerParams,
-                                                   refComponent, refStorageClass)
+                                                   refComponent, refStorageClass,
+                                                   type(readFormatter))
 
             return self._read_artifact_into_memory(readInfo, ref, isComponent=True)
 
@@ -1085,6 +1115,9 @@ class FileLikeDatastore(GenericBaseDatastore):
             if isDisassembled:
                 refStorageClass.validateParameters(parameters)
             else:
+                if getInfo.formatter is None:
+                    # for mypy
+                    raise RuntimeError(f"Unexpected null formatter for ref {ref}")
                 # For an assembled composite this could be a read-only
                 # component derived from a real component. The validity
                 # of the parameters is not clear. For now validate against
@@ -1190,7 +1223,7 @@ class FileLikeDatastore(GenericBaseDatastore):
                 raise FileNotFoundError(err_msg)
 
         for location, storedFileInfo in fileLocations:
-            if storedFileInfo.path is None:
+            if storedFileInfo.path is None or location is None:
                 # Composite formatter
                 continue
             if not self._artifact_exists(location):
@@ -1239,7 +1272,7 @@ class FileLikeDatastore(GenericBaseDatastore):
                         raise FileNotFoundError(err_msg)
 
                 for location, storedFileInfo in fileLocations:
-                    if storedFileInfo.path is None:
+                    if storedFileInfo.path is None or location is None:
                         # Composite formatter
                         continue
 
@@ -1274,8 +1307,9 @@ class FileLikeDatastore(GenericBaseDatastore):
                     self.removeStoredItemInfo(ref)
                 except Exception as e:
                     if ignore_errors:
+                        uris = [location.uri for location, _ in fileLocations if location is not None]
                         log.warning("Error removing dataset %s (%s) from internal registry of %s: %s",
-                                    ref.id, location.uri, self.name, e)
+                                    ref.id, ",".join(uris), self.name, e)
                         continue
                     else:
                         raise FileNotFoundError(err_msg)

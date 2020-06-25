@@ -126,6 +126,9 @@ class PosixDatastore(FileLikeDatastore):
                                    ref: DatasetRef, isComponent: bool = False) -> Any:
         location = getInfo.location
 
+        if location is None:
+            raise RuntimeError(f"Unexpectedly got null dataset location for ref {ref}")
+
         # Too expensive to recalculate the checksum on fetch
         # but we can check size and existence
         if not os.path.exists(location.path):
@@ -140,6 +143,12 @@ class PosixDatastore(FileLikeDatastore):
                                                                    storedFileInfo.file_size))
 
         formatter = getInfo.formatter
+
+        # Consistency check for mypy
+        if formatter is None:
+            raise RuntimeError(f"Internal error in datastore {self.name}: Null formatter encountered"
+                               f" for {ref}")
+
         try:
             result = formatter.read(component=getInfo.component if isComponent else None)
         except Exception as e:
@@ -361,6 +370,9 @@ class PosixDatastore(FileLikeDatastore):
             if len(fileLocations) > 1:
                 raise NotImplementedError(f"Can not export disassembled datasets such as {ref}")
             location, storedFileInfo = fileLocations[0]
+            if location is None:
+                # for mypy
+                raise RuntimeError(f"Unexpectedly got null location for {ref}")
             if transfer is None:
                 # TODO: do we also need to return the readStorageClass somehow?
                 yield FileDataset(refs=[ref], path=location.pathInStore, formatter=storedFileInfo.formatter)

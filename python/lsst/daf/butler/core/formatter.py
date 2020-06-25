@@ -385,7 +385,8 @@ class Formatter(metaclass=ABCMeta):
 
         return supported, unsupported
 
-    def selectResponsibleComponent(self, readComponent: str, fromComponents: Set[Optional[str]]) -> str:
+    @classmethod
+    def selectResponsibleComponent(cls, readComponent: str, fromComponents: Set[Optional[str]]) -> str:
         """Given a possible set of components to choose from, return the
         component that should be used to calculate the requested read
         component.

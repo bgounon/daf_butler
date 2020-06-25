@@ -164,7 +164,8 @@ class MetricsExampleFormatter(Formatter):
             yaml.dump(inMemoryDataset._asdict(), fd)
         return fileDescriptor.location.pathInStore
 
-    def selectResponsibleComponent(self, readComponent: str, fromComponents: Set[Optional[str]]) -> str:
+    @classmethod
+    def selectResponsibleComponent(cls, readComponent: str, fromComponents: Set[Optional[str]]) -> str:
         forwarderMap = {
             "counter": "data",
         }

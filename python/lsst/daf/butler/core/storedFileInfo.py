@@ -75,7 +75,7 @@ class StoredFileInfo(StoredDatastoreItemInfo):
     """Fully-qualified name of Formatter. If a Formatter class or instance
     is given the name will be extracted."""
 
-    path: str
+    path: Optional[str]
     """Path to dataset within Datastore."""
 
     storageClass: StorageClass
