@@ -119,13 +119,15 @@ class Query(ABC):
         raise NotImplementedError()
 
     @property
-    @abstractmethod
-    def datasetTypes(self) -> Iterator[DatasetType]:
+    def datasetType(self) -> Optional[DatasetType]:
         # TODO: docs
-        raise NotImplementedError()
+        cols = self.getDatasetColumns()
+        if cols is None:
+            return None
+        return cols.datasetType
 
     @abstractmethod
-    def getDatasetColumns(self, name: str) -> DatasetQueryColumns:
+    def getDatasetColumns(self) -> Optional[DatasetQueryColumns]:
         # TODO: docs
         raise NotImplementedError()
 
@@ -212,7 +214,7 @@ class Query(ABC):
             graph = self.graph
         return CompleteDataCoordinate.fromValues(graph, self.extractDimensionsTuple(row, graph.dimensions))
 
-    def extractDatasetRef(self, row: sqlalchemy.engine.RowProxy, datasetType: DatasetType,
+    def extractDatasetRef(self, row: sqlalchemy.engine.RowProxy,
                           dataId: Optional[DataCoordinate] = None) -> Tuple[DatasetRef, Optional[int]]:
         """Extract a `DatasetRef` from a result row.
 
@@ -220,11 +222,6 @@ class Query(ABC):
         ----------
         row : `sqlalchemy.engine.RowProxy`
             A result row from a SQLAlchemy SELECT query.
-        datasetType : `DatasetType`
-            Type of the dataset to extract.  Must have been included in the
-            `Query` via a call to `QueryBuilder.joinDataset` with
-            ``isResult=True``, or otherwise included in
-            `QueryColumns.datasets`.
         dataId : `DataCoordinate`
             Data ID to attach to the `DatasetRef`.  A minimal (i.e. base class)
             `DataCoordinate` is constructed from ``row`` if `None`.
@@ -240,11 +237,12 @@ class Query(ABC):
             query.  `None` if `QueryBuilder.joinDataset` was called with
             ``addRank=False``.
         """
+        datasetColumns = self.getDatasetColumns()
+        assert datasetColumns is not None
         if dataId is None:
-            dataId = self.extractDataId(row, graph=datasetType.dimensions)
-        datasetColumns = self.getDatasetColumns(datasetType.name)
+            dataId = self.extractDataId(row, graph=datasetColumns.datasetType.dimensions)
         runRecord = self._collections[row[datasetColumns.runKey]]
-        return (DatasetRef(datasetType, dataId, id=row[datasetColumns.id], run=runRecord.name),
+        return (DatasetRef(datasetColumns.datasetType, dataId, id=row[datasetColumns.id], run=runRecord.name),
                 row[datasetColumns.rank] if datasetColumns.rank is not None else None)
 
     def _makeTableSpec(self, constraints: bool = False) -> ddl.TableSpec:
@@ -253,36 +251,26 @@ class Query(ABC):
         spec = ddl.TableSpec(fields=())
         for dimension in self.graph:
             addDimensionForeignKey(spec, dimension, primaryKey=unique, constraint=constraints)
-        for datasetType in self.datasetTypes:
-            self._datasets.addDatasetForeignKey(spec, name=f"{datasetType.name}_dataset",
-                                                primaryKey=unique,
-                                                constraint=constraints)
-            self._collections.addRunForeignKey(spec, prefix=f"{datasetType.name}_dataset_run",
-                                               nullable=False,
-                                               constraint=constraints)
-            if self.getDatasetColumns(datasetType.name).rank is not None:
-                spec.fields.add(
-                    ddl.FieldSpec(
-                        name=f"{datasetType.name}_dataset_rank",
-                        dtype=sqlalchemy.Integer,
-                        nullable=False,
-                    )
-                )
         for element in self.spatial:
             field = copy.copy(REGION_FIELD_SPEC)
             field.name = f"{element.name}_region"
             spec.fields.add(field)
+        datasetColumns = self.getDatasetColumns()
+        if datasetColumns is not None:
+            self._datasets.addDatasetForeignKey(spec, primaryKey=unique, constraint=constraints)
+            self._collections.addRunForeignKey(spec, nullable=False, constraint=constraints)
+            if datasetColumns.rank is not None:
+                spec.fields.add(ddl.FieldSpec("rank", dtype=sqlalchemy.Integer, nullable=False))
         return spec
 
     def _makeSubsetQueryColumns(self, *, graph: Optional[DimensionGraph] = None,
-                                datasetTypes: Optional[Iterable[DatasetType]] = None,
+                                datasets: bool = True,
                                 unique: bool = False) -> Tuple[DimensionGraph, Optional[QueryColumns]]:
         # TODO: docs
         if graph is None:
             graph = self.graph
-        if datasetTypes is None:
-            datasetTypes = set(self.datasetTypes)
-        if graph == self.graph and datasetTypes == set(self.datasetTypes) and (self.isUnique() or not unique):
+        if (graph == self.graph and (self.getDatasetColumns() is None or datasets)
+                and (self.isUnique() or not unique)):
             return graph, None
         columns = QueryColumns()
         for dimension in graph.dimensions:
@@ -291,9 +279,8 @@ class Query(ABC):
         for element in self.spatial:
             col = self.getRegionColumn(element.name)
             columns.regions[element] = col
-        for datasetType in datasetTypes:
-            cols = self.getDatasetColumns(datasetType.name)
-            columns.datasets[datasetType] = cols
+        if not datasets and self.getDatasetColumns() is not None:
+            columns.datasets = self.getDatasetColumns()
         return graph, columns
 
     @contextmanager
@@ -303,7 +290,7 @@ class Query(ABC):
         db.insert(table, select=self.sql(), names=table.fields.names)
         yield MaterializedQuery(table=table,
                                 spatial=self.spatial,
-                                datasetTypes=self.datasetTypes,
+                                datasetType=self.datasetType,
                                 isUnique=self.isUnique(),
                                 graph=self.graph,
                                 whereRegion=self.whereRegion,
@@ -313,7 +300,7 @@ class Query(ABC):
 
     @abstractmethod
     def subset(self, *, graph: Optional[DimensionGraph] = None,
-               datasetTypes: Optional[Iterable[DatasetType]] = None,
+               datasets: bool = True,
                unique: bool = False) -> Query:
         # TODO: docs
         raise NotImplementedError()
@@ -375,18 +362,16 @@ class DirectQuery(Query):
         # Docstring inherited from Query.
         return self._columns.regions[name].label(f"{name}_region")
 
-    @property
-    def datasetTypes(self) -> Iterator[DatasetType]:
+    def getDatasetColumns(self) -> Optional[DatasetQueryColumns]:
         # Docstring inherited from Query.
-        return iter(self._columns.datasets)
-
-    def getDatasetColumns(self, name: str) -> DatasetQueryColumns:
-        # Docstring inherited from Query.
-        base = self._columns.datasets[name]
+        base = self._columns.datasets
+        if base is None:
+            return None
         return DatasetQueryColumns(
-            id=base.id.label(f"{name}_dataset_id"),
-            runKey=base.runKey.label(self._collections.getRunForeignKeyName(f"{name}_dataset_run")),
-            rank=(base.rank.label("f{name}_dataset_rank") if base.rank is not None else None),
+            datasetType=base.datasetType,
+            id=base.id.label("dataset_id"),
+            runKey=base.runKey.label(self._collections.getRunForeignKeyName()),
+            rank=(base.rank.label("rank") if base.rank is not None else None),
         )
 
     @property
@@ -395,10 +380,26 @@ class DirectQuery(Query):
         simpleQuery = self._simpleQuery.copy()
         for dimension in self.graph:
             simpleQuery.columns.append(self.getDimensionColumn(dimension.name))
-        for datasetType in self.datasetTypes:
-            simpleQuery.columns.extend(self.getDatasetColumns(datasetType.name))
         for element in self.spatial:
             simpleQuery.columns.append(self.getRegionColumn(element.name))
+        datasetColumns = self.getDatasetColumns()
+        if datasetColumns is not None:
+            simpleQuery.columns.extend(datasetColumns)
+            if datasetColumns.rank is not None:
+                # Use the query we've built so far as a subquery in the thing
+                # we'll actually return, in order to allow that outer query to
+                # have a "WHERE rank = 1" constraint instead of a rank return
+                # column.
+                subquery = simpleQuery.combine()
+                # Make a new SimpleQuery for the outer query.  Keep the old one
+                # around so we can inspect it a bit.
+                outer = SimpleQuery()
+                outer.join(subquery)
+                outer.columns.extend(subquery.columns[c.name].label(c.name)
+                                     for c in simpleQuery.columns[:-1])
+                outer.where.append(subquery.columns["rank"] == 1)
+                # Replace the original SimpleQuery var with the outer one.
+                simpleQuery = outer
         sql = simpleQuery.combine()
         if self._uniqueness is DirectQueryUniqueness.NEEDS_DISTINCT:
             return sql.distinct()
@@ -406,10 +407,10 @@ class DirectQuery(Query):
             return sql
 
     def subset(self, *, graph: Optional[DimensionGraph] = None,
-               datasetTypes: Optional[Iterable[DatasetType]] = None,
+               datasets: bool = True,
                unique: bool = False) -> DirectQuery:
         # Docstring inherited from Query.
-        graph, columns = self._makeSubsetQueryColumns(graph=graph, datasetTypes=datasetTypes, unique=unique)
+        graph, columns = self._makeSubsetQueryColumns(graph=graph, datasets=datasets, unique=unique)
         if columns is None:
             return self
         return DirectQuery(
@@ -444,7 +445,7 @@ class MaterializedQuery(Query):
     def __init__(self, *,
                  table: sqlalchemy.schema.Table,
                  spatial: Iterable[DimensionElement],
-                 datasetTypes: Iterable[DatasetType],
+                 datasetType: Optional[DatasetType],
                  isUnique: bool,
                  graph: DimensionGraph,
                  whereRegion: Optional[Region],
@@ -453,7 +454,7 @@ class MaterializedQuery(Query):
         super().__init__(graph=graph, whereRegion=whereRegion, collections=collections, datasets=datasets)
         self._table = table
         self._spatial = tuple(spatial)
-        self._datasetTypes = tuple(datasetTypes)
+        self._datasetType = datasetType
         self._isUnique = isUnique
 
     def isUnique(self) -> bool:
@@ -474,22 +475,26 @@ class MaterializedQuery(Query):
         return self._table.columns[f"{name}_region"]
 
     @property
-    def datasetTypes(self) -> Iterator[DatasetType]:
+    def datasetTypes(self) -> Optional[DatasetType]:
         # Docstring inherited from Query.
-        return iter(self._datasetTypes)
+        return self._datasetType
 
-    def getDatasetColumns(self, name: str) -> DatasetQueryColumns:
+    def getDatasetColumns(self) -> Optional[DatasetQueryColumns]:
         # Docstring inherited from Query.
-        return DatasetQueryColumns(
-            id=self._table.columns[f"{name}_dataset_id"],
-            runKey=self._table.columns[self._collections.getRunForeignKeyName(f"{name}_dataset_run")],
-            rank=self._table.columns.get(f"{name}_dataset_rank"),
-        )
+        if self._datasetType is not None:
+            return DatasetQueryColumns(
+                datasetType=self._datasetType,
+                id=self._table.columns["dataset_id"],
+                runKey=self._table.columns[self._collections.getRunForeignKeyName()],
+                rank=self._table.columns.get("rank"),
+            )
+        else:
+            return None
 
     @property
     def sql(self) -> sqlalchemy.sql.FromClause:
         # Docstring inherited from Query.
-        return self._table.select().unique()
+        return self._table.select()
 
     @contextmanager
     def materialize(self, db: Database) -> Iterator[MaterializedQuery]:
@@ -497,10 +502,10 @@ class MaterializedQuery(Query):
         yield self
 
     def subset(self, *, graph: Optional[DimensionGraph] = None,
-               datasetTypes: Optional[Iterable[DatasetType]] = None,
+               datasets: bool = True,
                unique: bool = False) -> Query:
         # Docstring inherited from Query.
-        graph, columns = self._makeSubsetQueryColumns(graph=graph, datasetTypes=datasetTypes, unique=unique)
+        graph, columns = self._makeSubsetQueryColumns(graph=graph, datasets=datasets, unique=unique)
         if columns is None:
             return self
         simpleQuery = SimpleQuery()

@@ -176,7 +176,10 @@ class QueryBuilder:
         subquery = sqlalchemy.sql.union_all(*subsubqueries).alias(datasetType.name)
         self.joinTable(subquery, datasetType.dimensions.required)
         if isResult:
-            self._columns.datasets[datasetType] = DatasetQueryColumns(
+            assert self._columns.datasets is None, \
+                "At most one result dataset type can be returned by a single."
+            self._columns.datasets = DatasetQueryColumns(
+                datasetType=datasetType,
                 id=subquery.columns["id"],
                 runKey=subquery.columns[self._collections.getRunForeignKeyName()],
                 rank=subquery.columns["rank"] if addRank else None

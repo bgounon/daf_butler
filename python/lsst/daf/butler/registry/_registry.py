@@ -1216,7 +1216,7 @@ class Registry:
                             records={name: standardizedDataId.record(name)
                                      for name in standardizedDataId.graph.elements.names}
                         )
-                    yield query.extractDatasetRef(row, datasetType, dataId)[0]
+                    yield query.extractDatasetRef(row, dataId)[0]
         else:
             # For each data ID, yield only the DatasetRef with the lowest
             # collection rank.
@@ -1224,7 +1224,7 @@ class Registry:
             bestRanks: Dict[DataCoordinate, int] = {}
             for row in self._db.query(query.sql):
                 if predicate(row):
-                    ref, rank = query.extractDatasetRef(row, datasetType)
+                    ref, rank = query.extractDatasetRef(row)
                     bestRank = bestRanks.get(ref.dataId, sys.maxsize)
                     assert rank is not None
                     if rank < bestRank:
@@ -1334,7 +1334,6 @@ class Registry:
         for datasetType in standardizedDatasetTypes:
             builder.joinDataset(datasetType, collections, isResult=False)
         query = builder.finish()
-        query = query.subset(datasetTypes=())
         return CompleteDataCoordinateQueryResults(self._db, query, self._dimensions)
 
     def queryDimensionRecords(self, element: Union[DimensionElement, str], *,
