@@ -26,7 +26,7 @@ __all__ = (
 )
 
 from contextlib import contextmanager
-from typing import Callable, Dict, Iterator, Optional, Type
+from typing import Any, Callable, Dict, Iterator, Optional, Set, Tuple, Type
 
 import sqlalchemy
 
@@ -109,6 +109,14 @@ class CompleteDataCoordinateQueryResults(DataCoordinateIterable[CompleteDataCoor
             ])
         )
 
+    def findDirectDatasets(self, datasetType: DatasetType, collections: Any = None
+                           ) -> FlatDatasetQueryResults:
+        raise NotImplementedError()
+
+    def findRelatedDatasets(self, datasetType: DatasetType, collections: Any = None
+                            ) -> GroupedDatasetQueryResults:
+        raise NotImplementedError()
+
 
 class ExpandedDataCoordinateQueryResults(DataCoordinateIterable[ExpandedDataCoordinate]):
 
@@ -158,3 +166,43 @@ class ExpandedDataCoordinateQueryResults(DataCoordinateIterable[ExpandedDataCoor
 
     def constrain(self, query: SimpleQuery, columns: Callable[[str], sqlalchemy.sql.ColumnElement]) -> None:
         self._complete.constrain(query, columns)
+
+
+class FlatDatasetQueryResults:
+
+    def __iter__(self) -> Iterator[DatasetRef]:
+        raise NotImplementedError()
+
+    @property
+    def datasetType(self) -> DatasetType:
+        raise NotImplementedError()
+
+    @contextmanager
+    def materialize(self) -> Iterator[FlatDatasetQueryResults]:
+        raise NotImplementedError()
+
+    def expanded(self) -> FlatDatasetQueryResults:
+        raise NotImplementedError()
+
+
+class GroupedDatasetQueryResults:
+
+    def __iter__(self) -> Iterator[Tuple[CompleteDataCoordinate, Set[DatasetRef]]]:
+        raise NotImplementedError()
+
+    @property
+    def datasetType(self) -> DatasetType:
+        raise NotImplementedError()
+
+    def graph(self) -> DimensionGraph:
+        raise NotImplementedError()
+
+    @contextmanager
+    def materialize(self) -> Iterator[GroupedDatasetQueryResults]:
+        raise NotImplementedError()
+
+    def expanded(self) -> GroupedDatasetQueryResults:
+        raise NotImplementedError()
+
+    def flatten(self) -> FlatDatasetQueryResults:
+        raise NotImplementedError()
