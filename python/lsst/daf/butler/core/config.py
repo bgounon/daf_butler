@@ -32,6 +32,7 @@ import pprint
 import os
 import yaml
 import sys
+import tempfile
 from yaml.representer import Representer
 import io
 from typing import Sequence, Optional, ClassVar, IO, Union
@@ -801,6 +802,44 @@ class Config(collections.abc.MutableMapping):
 
         uri.write(self.dump().encode(), overwrite=overwrite)
         self.configFile = uri
+
+    def dumpToWebdavFile(self, uri, *, overwrite=True):
+        """Writes the config to a file in S3 Bucket.
+
+        Parameters
+        ----------
+        uri : `ButlerURI`
+            S3 URI where the configuration should be stored.
+        overwrite : `bool`, optional
+            If False, a check will be made to see if the key already
+            exists.
+
+        Raises
+        ------
+        FileExistsError
+            Raised if the configuration already exists at this location
+            and overwrite is set to `False`.
+        """
+        if wc is None:
+            raise ModuleNotFoundError("Could not find webdav3.client. "
+                                      "Are you sure it is installed?")
+
+        if uri.scheme != "https":
+            raise ValueError(f"Must provide webdav/HTTPS URI not {uri}")
+        
+        client = getWebdavClient()
+        session = getHttpSession()
+
+        if not overwrite:
+            from .webdavutils import webdavCheckFileExists
+            if webdavCheckFileExists(uri, client)[0]:
+                raise FileExistsError(f"Config already exists at {uri}")
+
+        with io.StringIO() as stream:
+            self.dump(stream)
+            stream.seek(0)
+            #{s3.put_object(Bucket=bucket, Key=key, Body=stream.read())
+            session.put(uri.geturl(), data=stream.read())
 
     @staticmethod
     def updateParameters(configType, config, full, toUpdate=None, toCopy=None, overwrite=True):
