@@ -48,7 +48,27 @@ from .location import ButlerURI, Location
 def getHttpSession() -> requests.Session:
     
     s = requests.Session()
-    s.cert = (os.environ.get("WEBDAV_PROXY_CERT"), os.environ.get("WEBDAV_PROXY_CERT"))
+
+    try: 
+        env_auth_method = os.environ['WEBDAV_AUTH_METHOD']
+    except KeyError:  
+        raise KeyError("Environment variable WEBDAV_AUTH_METHOD is not set, please use values X509 or TOKEN") 
+
+    if env_auth_method == "X509":
+        try: 
+            proxy_cert = os.environ['WEBDAV_PROXY_CERT']
+        except KeyError:  
+            raise KeyError("Environment variable WEBDAV_PROXY_CERT is not set") 
+        s.cert = (proxy_cert, proxy_cert)
+    elif env_auth_method == "TOKEN":
+        try: 
+            bearer_token = os.environ['WEBDAV_BEARER_TOKEN']
+        except KeyError:  
+            raise KeyError("Environment variable WEBDAV_BEARER_TOKEN is not set") 
+        s.headers = {'Authorization':'Bearer ' + bearer_token}
+    else:
+        raise ValueError("Environment variable WEBDAV_AUTH_METHOD must be set to X509 or TOKEN")
+
     s.verify = False
 
     return s
@@ -69,20 +89,50 @@ def getWebdavClient() -> wc.Client:
     if wc is None:
         raise ModuleNotFoundError("Could not find webdav.client. "
                                   "Are you sure it is installed?")
+
+    try: 
+        env_auth_method = os.environ['WEBDAV_AUTH_METHOD']
+    except KeyError:  
+        raise KeyError("Environment variable WEBDAV_AUTH_METHOD is not set, please use values X509 or TOKEN") 
+
+    try: 
+        env_webdav_endpoint = os.environ['WEBDAV_ENDPOINT_URL']
+    except KeyError:  
+        raise KeyError("Environment variable WEBDAV_ENDPOINT_URL is not set") 
     
-    options = {
-        'webdav_hostname': os.environ.get("WEBDAV_ENDPOINT_URL", None),
-        'cert_path': os.environ.get("WEBDAV_PROXY_CERT", None),
-        'key_path': os.environ.get("WEBDAV_PROXY_CERT", None),
-        'verbose'    : False
-    }
+    if env_auth_method == "X509":
+        try: 
+            env_webdav_cert = os.environ['WEBDAV_PROXY_CERT']
+        except KeyError:  
+            raise KeyError("Environment variable WEBDAV_PROXY_CERT is not set") 
+
+        options = {
+            'webdav_hostname': env_webdav_endpoint,
+            'cert_path': env_webdav_cert,
+            'key_path': env_webdav_cert,
+            'verbose'    : False
+        }
+    elif env_auth_method == "TOKEN":
+        try: 
+            env_webdav_token = os.environ['WEBDAV_BEARER_TOKEN']
+        except KeyError:  
+            raise KeyError("Environment variable WEBDAV_BEARER_TOKEN is not set") 
+
+        options = {
+            'webdav_hostname': env_webdav_endpoint,
+            'webdav_token': env_webdav_token,
+            'verbose'    : False
+        }
+    else:
+        raise ValueError("Environment variable WEBDAV_AUTH_METHOD must be set to X509 or TOKEN")
 
     try:
         client = wc.Client(options)
     except WebDavException as exception:
-        raise ValueError(f"Failure to create webdav client, please check your WEBDAV_ENDPOINT_URL and WEBDAV_PROXY_CERT values") from exception   
+        raise ValueError(f"Failure to create webdav client, please check your WEBDAV_ENDPOINT_URL and other environment variables") from exception   
         
     client.verify = False
+
     return client
 
 
@@ -129,7 +179,7 @@ def webdavCheckFileExists(path: Union[Location, ButlerURI, str],
         try:
             size = client.info(filepath)["size"]
         except WebDavException as exception:
-            raise ValueError(f"Failed to retrieve size of file, maybe check your permissions ?") from exception
+            raise ValueError(f"Failed to retrieve size of file, check your permissions") from exception
         return (True, size)
     
     return (False, -1)
@@ -156,51 +206,10 @@ def folderExists(folderName: str, client: Optional[wc.Client] = None) -> bool:
     configuration.html#configuring-credentials
     """
     if wc is None:
-        raise ModuleNotFoundError("Could not find webdav.client. "
+        raise ModuleNotFoundError("Could not find webdav3.client. "
                                   "Are you sure it is installed?")
 
     if client is None:
         client = getWebdavClient()
 
     return client.check(folderName)
-
-
-def setAwsEnvCredentials(accessKeyId: str = 'dummyAccessKeyId',
-                         secretAccessKey: str = "dummySecretAccessKey") -> bool:
-    """Set AWS credentials environmental variables AWS_ACCESS_KEY_ID and
-    AWS_SECRET_ACCESS_KEY.
-
-    Parameters
-    ----------
-    accessKeyId : `str`
-        Value given to AWS_ACCESS_KEY_ID environmental variable. Defaults to
-        'dummyAccessKeyId'
-    secretAccessKey : `str`
-        Value given to AWS_SECRET_ACCESS_KEY environmental variable. Defaults
-        to 'dummySecretAccessKey'
-
-    Returns
-    -------
-    setEnvCredentials : `bool`
-        True when environmental variables were set, False otherwise.
-
-    Notes
-    -----
-    If either AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY are not set, both
-    values are overwritten.
-    """
-    if "AWS_ACCESS_KEY_ID" not in os.environ or "AWS_SECRET_ACCESS_KEY" not in os.environ:
-        os.environ["AWS_ACCESS_KEY_ID"] = accessKeyId
-        os.environ["AWS_SECRET_ACCESS_KEY"] = secretAccessKey
-        return True
-    return False
-
-
-def unsetAwsEnvCredentials() -> None:
-    """Unsets AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environmental
-    variables.
-    """
-    if "AWS_ACCESS_KEY_ID" in os.environ:
-        del os.environ["AWS_ACCESS_KEY_ID"]
-    if "AWS_SECRET_ACCESS_KEY" in os.environ:
-        del os.environ["AWS_SECRET_ACCESS_KEY"]
