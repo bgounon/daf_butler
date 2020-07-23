@@ -32,7 +32,6 @@ import pprint
 import os
 import yaml
 import sys
-import tempfile
 from yaml.representer import Representer
 import io
 from typing import Sequence, Optional, ClassVar, IO, Union
@@ -826,7 +825,7 @@ class Config(collections.abc.MutableMapping):
 
         if uri.scheme != "https":
             raise ValueError(f"Must provide webdav/HTTPS URI not {uri}")
-        
+
         client = getWebdavClient()
         session = getHttpSession()
 
