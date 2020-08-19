@@ -181,6 +181,9 @@ class WebdavDatastore(FileLikeDatastore):
             raise FileExistsError(f"Cannot write file for ref {ref} as "
                                   f"output file {location.uri} exists.")
 
+        if not location.uri.dirname().exists():
+            log.debug("Folder %s does not exist yet.", location.uri.dirname().geturl())
+            location.uri.dirname().mkdir()
         try:
             serializedDataset = formatter.toBytes(inMemoryDataset)
             self.session.put(location.uri.geturl(), data=serializedDataset)
@@ -243,6 +246,9 @@ class WebdavDatastore(FileLikeDatastore):
             assert transfer == "move" or transfer == "copy", "Should be guaranteed by _standardizeIngestPath"
 
             tgtLocation = self._calculate_ingested_datastore_name(srcUri, ref, formatter)
+            if not tgtLocation.uri.dirname().exists():
+                log.debug("Folder %s does not exist yet.", tgtLocation.uri.dirname().geturl())
+                tgtLocation.uri.dirname().mkdir()
 
             if srcUri.scheme == "file":
                 # source is on local disk.
