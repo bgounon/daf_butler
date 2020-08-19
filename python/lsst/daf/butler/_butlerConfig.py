@@ -93,7 +93,7 @@ class ButlerConfig(Config):
                     uri = ButlerURI(other, forceDirectory=True)
                 uri.updateFile("butler.yaml")
                 other = uri.geturl()
-            elif uri.scheme == "https":
+            elif uri.scheme.startswith("http"):
                 if not uri.dirLike and "." not in uri.basename():
                     uri = ButlerURI(other, forceDirectory=True)
                 uri.updateFile("butler.yaml")
